@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Open in IINA
 // @namespace    https://github.com/Noyoth/userscripts
-// @version      1.0.0
+// @version      1.1.0
 // @description  Adds a keyboard shortcut (Option+I) to open the current page URL in IINA.
 // @author       Noyoth
 // @match        *://*/*
@@ -13,16 +13,26 @@
 
 (function() {
     'use strict';
+
     document.addEventListener('keydown', function(e) {
-        if (e.target.tagName === 'INPUT' ||
-            e.target.tagName === 'TEXTAREA' ||
-            e.target.isContentEditable) {
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) {
             return;
         }
 
         if (e.altKey && e.code === 'KeyI') {
-            const videoUrl = window.location.href;
-            window.location.href = `iina://open?url=${encodeURIComponent(videoUrl)}`;
+            const videoElement = document.querySelector('video');
+            let targetUrl = window.location.href;
+
+            if (videoElement && videoElement.currentSrc) {
+                const streamUrl = videoElement.currentSrc;
+
+                if (streamUrl.startsWith('http')) {
+                    targetUrl = streamUrl;
+                }
+            }
+
+            console.log('Sending to IINA:', targetUrl);
+            window.location.href = `iina://open?url=${encodeURIComponent(targetUrl)}`;
         }
     }, false);
 })();
