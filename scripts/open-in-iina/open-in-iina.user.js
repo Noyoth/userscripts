@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Open in IINA
 // @namespace    https://github.com/Noyoth/userscripts
-// @version      1.2.0
-// @description  Adds a keyboard shortcut (Option+I) to open the current page URL in IINA.
+// @version      1.3.0
+// @description  Opens web videos in IINA using a keyboard shortcut (Option + I).
 // @author       Noyoth
 // @match        *://*/*
 // @license      MIT
@@ -14,39 +14,82 @@
 (function() {
     'use strict';
 
-    function getRealVideoUrl() {
-        if (window.ap && window.ap.options && window.ap.options.video) {
-            return window.ap.options.video.url;
-        }
-        if (window.aplayer && window.aplayer.options) {
-            return window.aplayer.options.video.url;
-        }
+    let lastSniffedUrl = '';
 
-        const scripts = document.getElementsByTagName('script');
-        for (let script of scripts) {
-            const match = script.textContent.match(/https?%?[^"']+?\.m3u8[^"']*?/i);
-            if (match) {
-                return decodeURIComponent(match[0].replace(/\\/g, ''));
+    const originalOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function(method, url) {
+        if (typeof url === 'string' && (url.includes('.m3u8') || url.includes('.mp4') || url.includes('video'))) {
+            lastSniffedUrl = url;
+        }
+        return originalOpen.apply(this, arguments);
+    };
+
+    const originalFetch = window.fetch;
+    window.fetch = function(input, init) {
+        let url = input;
+        if (input instanceof Request) url = input.url;
+        if (typeof url === 'string' && (url.includes('.m3u8') || url.includes('.mp4') || url.includes('video'))) {
+            lastSniffedUrl = url;
+        }
+        return originalFetch.apply(this, arguments);
+    };
+
+    function unpackUrl(url) {
+        if (!url) return null;
+
+        let cleanUrl = url.replace(/&amp;/g, '&');
+
+        try {
+            const urlObj = new URL(cleanUrl);
+            const params = new URLSearchParams(urlObj.search);
+
+            for (const [key, value] of params.entries()) {
+                if (value.startsWith('http') && (value.includes('.m3u8') || value.includes('.mp4'))) {
+                    console.log(`[IINA Unpacker] Found nested URL in parameter '${key}':`, value);
+                    return value; 
+                }
             }
+        } catch (e) {
         }
 
-        const video = document.querySelector('video');
-        if (video && video.currentSrc && !video.currentSrc.startsWith('blob:')) {
-            return video.currentSrc;
+        cleanUrl = cleanUrl.replace(/\\/g, '');
+        if (cleanUrl.startsWith('//')) {
+            cleanUrl = window.location.protocol + cleanUrl;
+        } else if (cleanUrl.startsWith('/')) {
+            cleanUrl = window.location.origin + cleanUrl;
         }
+
+        return cleanUrl;
+    }
+
+    function getRealVideoUrl() {
+        if (lastSniffedUrl) {
+            const unpacked = unpackUrl(lastSniffedUrl);
+            if (unpacked && !unpacked.startsWith('blob:')) return unpacked;
+        }
+
+        const globalConfigs = [window.player_data, window.config, window.opts];
+        for (let conf of globalConfigs) {
+            if (conf && conf.url) return unpackUrl(conf.url);
+        }
+
+        const pageHtml = document.documentElement.innerHTML;
+        const m3u8Regex = /https?[:\\\/]+[^"']+?\.m3u8[^"']*?/i;
+        const match = pageHtml.match(m3u8Regex);
+        if (match) return unpackUrl(match[0]);
 
         return window.location.href;
     }
 
     document.addEventListener('keydown', function(e) {
-        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) {
-            return;
-        }
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
 
         if (e.altKey && e.code === 'KeyI') {
             const targetUrl = getRealVideoUrl();
-            console.log('[IINA] Sniffed URL:', targetUrl);
-            window.location.href = `iina://open?url=${encodeURIComponent(targetUrl)}`;
+            console.log('[IINA Final] Sending:', targetUrl);
+            if (targetUrl) {
+                window.location.href = `iina://open?url=${encodeURIComponent(targetUrl)}`;
+            }
         }
     }, false);
 })();
