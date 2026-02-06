@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Open in IINA
 // @namespace    https://github.com/Noyoth/userscripts
-// @version      1.1.0
+// @version      1.2.0
 // @description  Adds a keyboard shortcut (Option+I) to open the current page URL in IINA.
 // @author       Noyoth
 // @match        *://*/*
@@ -14,24 +14,38 @@
 (function() {
     'use strict';
 
+    function getRealVideoUrl() {
+        if (window.ap && window.ap.options && window.ap.options.video) {
+            return window.ap.options.video.url;
+        }
+        if (window.aplayer && window.aplayer.options) {
+            return window.aplayer.options.video.url;
+        }
+
+        const scripts = document.getElementsByTagName('script');
+        for (let script of scripts) {
+            const match = script.textContent.match(/https?%?[^"']+?\.m3u8[^"']*?/i);
+            if (match) {
+                return decodeURIComponent(match[0].replace(/\\/g, ''));
+            }
+        }
+
+        const video = document.querySelector('video');
+        if (video && video.currentSrc && !video.currentSrc.startsWith('blob:')) {
+            return video.currentSrc;
+        }
+
+        return window.location.href;
+    }
+
     document.addEventListener('keydown', function(e) {
         if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) {
             return;
         }
 
         if (e.altKey && e.code === 'KeyI') {
-            const videoElement = document.querySelector('video');
-            let targetUrl = window.location.href;
-
-            if (videoElement && videoElement.currentSrc) {
-                const streamUrl = videoElement.currentSrc;
-
-                if (streamUrl.startsWith('http')) {
-                    targetUrl = streamUrl;
-                }
-            }
-
-            console.log('Sending to IINA:', targetUrl);
+            const targetUrl = getRealVideoUrl();
+            console.log('[IINA] Sniffed URL:', targetUrl);
             window.location.href = `iina://open?url=${encodeURIComponent(targetUrl)}`;
         }
     }, false);
