@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Open in IINA
 // @namespace    https://github.com/Noyoth/userscripts
-// @version      2.0.1
-// @description  Opens web videos in IINA via (Option + I), featuring specialized support for https://bgm.girigirilove.com to export complete series as .m3u playlists.
+// @version      2.1.0
+// @description  Opens web videos in IINA via (Option + I), featuring specialized support for bgm.girigirilove.com to export complete series as .m3u playlists.
 // @author       Noyoth
 // @match        *://*/*
 // @license      MIT
@@ -14,8 +14,15 @@
 (function() {
     'use strict';
 
-    const UtilsGiri = {
-        formatUrl: function(url) {
+    // =========================================================================
+    // 🔰 CORE: Shared Utilities & UI
+    // =========================================================================
+    const Core = {
+        state: {
+            lastSniffedUrl: ''
+        },
+
+        formatUrl: (url) => {
             if (!url) return null;
             try {
                 const decoded = decodeURIComponent(url);
@@ -28,7 +35,7 @@
             return cleanUrl;
         },
 
-        extractVideoFuzzy: function(html) {
+        extractVideoFuzzy: (html) => {
             if (!html) return null;
             const cleanHtml = html.replace(/\\/g, '');
             const jsonRegex = /(?:player_data|config|opts|video)\s*=\s*({.*?})/;
@@ -36,20 +43,18 @@
             if (jsonMatch) {
                 try {
                     const urlInJson = jsonMatch[1].match(/["']url["']\s*:\s*["']([^"']+)["']/);
-                    if (urlInJson) return UtilsGiri.formatUrl(urlInJson[1]);
+                    if (urlInJson) return Core.formatUrl(urlInJson[1]);
                 } catch(e) {}
             }
             const rawMatches = cleanHtml.match(/https?:[^"'<>\s]+?\.m3u8/gi);
             if (rawMatches && rawMatches.length > 0) {
                 const valid = rawMatches.filter(u => !u.includes('ad') && !u.includes('log'));
-                if (valid.length > 0) return UtilsGiri.formatUrl(valid[0]);
+                if (valid.length > 0) return Core.formatUrl(valid[0]);
             }
-            const mp4Matches = cleanHtml.match(/https?:[^"'<>\s]+?\.mp4/gi);
-            if (mp4Matches && mp4Matches.length > 0) return UtilsGiri.formatUrl(mp4Matches[0]);
             return null;
         },
 
-        showToast: function(msg, duration = 0) {
+        showToast: (msg, duration = 0) => {
             let toastNode = document.getElementById('iina-toast');
             if (!toastNode) {
                 toastNode = document.createElement('div');
@@ -75,240 +80,241 @@
         }
     };
 
-    const StrategyGiri = {
-        name: 'GiriGiri (v3.3.1 Strict)',
+    // =========================================================================
+    // 🔌 ADAPTERS
+    // =========================================================================
+
+    // --- Adapter 1: GiriGiri (Unified Crawler Logic) ---
+    const AdapterGiri = {
+        name: 'GiriGiri (Crawler)',
         match: () => location.hostname.includes('girigirilove') || location.hostname.includes('iyoudm'),
 
-        runChild: () => {
+        onReady: () => {
+            if (window.self === window.top) return;
+
             let foundAndSent = false;
-            const reportFound = (rawUrl, source) => {
+            const report = (rawUrl) => {
                 if (foundAndSent || !rawUrl) return;
-                const finalUrl = UtilsGiri.formatUrl(rawUrl);
+                const finalUrl = Core.formatUrl(rawUrl);
                 if (finalUrl && !finalUrl.startsWith('blob:')) {
                     window.top.postMessage({ type: 'IINA_VIDEO_FOUND', url: finalUrl, href: window.location.href }, '*');
                     foundAndSent = true;
                 }
             };
-            const checkNetwork = (url) => {
-                if (typeof url === 'string' && (url.includes('.m3u8') || url.includes('.mp4'))) {
-                    reportFound(url, 'Network');
+
+            const check = (u) => { if(typeof u==='string' && (u.includes('.m3u8')||u.includes('.mp4'))) report(u); };
+            const oriOpen = XMLHttpRequest.prototype.open;
+            XMLHttpRequest.prototype.open = function(m, u) { check(u); return oriOpen.apply(this, arguments); };
+
+            const configs = [window.player_data, window.config, window.opts];
+            for (let c of configs) if (c && c.url) report(c.url);
+            const f = Core.extractVideoFuzzy(document.body.innerHTML);
+            if (f) report(f);
+
+            setTimeout(() => {
+                if (!foundAndSent) {
+                    const btn = document.querySelector('.dplayer-mobile-play, .art-state-play, button[aria-label="Play"], video');
+                    if (btn) btn.click();
                 }
-            };
-            const originalOpen = XMLHttpRequest.prototype.open;
-            XMLHttpRequest.prototype.open = function(method, url) {
-                checkNetwork(url);
-                return originalOpen.apply(this, arguments);
-            };
-            const originalFetch = window.fetch;
-            window.fetch = function(input, init) {
-                let url = input instanceof Request ? input.url : input;
-                checkNetwork(url);
-                return originalFetch.apply(this, arguments);
-            };
-            window.addEventListener('DOMContentLoaded', () => {
-                const configs = [window.player_data, window.config, window.opts, window.video_config];
-                for (let conf of configs) {
-                    if (conf && conf.url) reportFound(conf.url, 'GlobalVar');
-                }
-                const fuzzyUrl = UtilsGiri.extractVideoFuzzy(document.body.innerHTML);
-                if (fuzzyUrl) reportFound(fuzzyUrl, 'HTMLScan');
-                setTimeout(() => {
-                    if (!foundAndSent) {
-                        const playBtn = document.querySelector('.dplayer-mobile-play, .art-state-play, button[aria-label="Play"], video');
-                        if (playBtn) playBtn.click();
-                    }
-                }, 100);
-            });
+            }, 10);
+
             setInterval(() => {
                 if (!foundAndSent) {
                     const v = document.querySelector('video');
-                    if (v && v.src && v.src.startsWith('http')) reportFound(v.src, 'VideoTag');
+                    if (v && v.src && v.src.startsWith('http')) report(v.src);
                 }
             }, 1000);
         },
 
-        exportPlaylist: async () => {
-            const findBestPlaylistLinks = () => {
-                const allLinks = document.getElementsByTagName('a');
-                const pathParts = location.pathname.split('/').filter(p => p && p.trim() !== '');
-                const currentId = pathParts.length > 0 ? pathParts[pathParts.length - 1].replace(/\.[^/.]+$/, "") : null;
-                if (currentId) {
-                    const strictGroup = [];
-                    for (let link of allLinks) {
-                        const href = link.href;
-                        if (!href || href.includes('javascript') || href === window.location.href) continue;
-                        if (link.hostname !== location.hostname) continue;
-                        if (href.includes(currentId) && (href.includes('play') || href.includes('vod-play') || href.includes('video'))) {
-                            strictGroup.push(link);
-                        }
-                    }
-                    if (strictGroup.length > 1) return [...new Set(strictGroup)];
-                }
-                const groups = new Map();
-                for (let link of allLinks) {
-                    const href = link.getAttribute('href');
-                    if (!href || href.includes('javascript') || href === '#') continue;
-                    const text = link.innerText.trim();
-                    if (/^(\d+|第\d+集|OVA\d*|SP\d*|EP\d+)$/i.test(text) || /^\d+-\d+$/.test(text)) {
-                        const gp = link.parentElement?.parentElement;
-                        if (gp) {
-                            if (!groups.has(gp)) groups.set(gp, []);
-                            groups.get(gp).push(link);
-                        }
-                    }
-                }
-                let bestGroup = [];
-                for (let links of groups.values()) { if (links.length > bestGroup.length) bestGroup = links; }
-                return bestGroup.length > 1 ? bestGroup : null;
-            };
+        execute: async () => {
+            const isPlayPage = /\/play/i.test(location.pathname);
+            if (isPlayPage) {
+                Core.showToast('🕷️ Single Mode: Crawling current page...', 2000);
 
-            const episodeLinks = findBestPlaylistLinks();
-            if (!episodeLinks || episodeLinks.length === 0) {
-                UtilsGiri.showToast('⚠️ No episode list found.', 3000);
+                // Create a container for the single-task crawler
+                const container = document.createElement('div');
+                container.style.cssText = 'position:fixed;right:0;bottom:0;width:10px;height:10px;opacity:0.01;z-index:9999;';
+                document.body.appendChild(container);
+
+                // Listen for result
+                const singleMessageHandler = (e) => {
+                    if (e.data?.type === 'IINA_VIDEO_FOUND' && e.data.url) {
+                        // Success!
+                        Core.showToast('🚀 [Single] URL Found! Opening IINA...', 2000);
+                        window.location.href = `iina://open?url=${encodeURIComponent(e.data.url)}`;
+
+                        // Cleanup
+                        window.removeEventListener('message', singleMessageHandler);
+                        document.body.removeChild(container);
+                    }
+                };
+                window.addEventListener('message', singleMessageHandler);
+
+                // Launch Iframe (reload current page in iframe to trigger child logic)
+                const iframe = document.createElement('iframe');
+                iframe.src = window.location.href;
+                iframe.style.width = '400px'; iframe.style.height = '300px';
+                container.appendChild(iframe);
+
+                // Timeout fallback
+                setTimeout(() => {
+                    if (document.body.contains(container)) {
+                        Core.showToast('❌ Single crawl timed out.', 3000);
+                        window.removeEventListener('message', singleMessageHandler);
+                        document.body.removeChild(container);
+                    }
+                }, 8000); // 8s timeout for single page
+
                 return;
             }
 
-            const uniqueLinks = new Map();
-            episodeLinks.forEach(link => uniqueLinks.set(link.href, link));
-            const finalLinks = Array.from(uniqueLinks.values());
+            const findBestLinks = () => {
+                const allLinks = document.getElementsByTagName('a');
+                const pathParts = location.pathname.split('/').filter(p => p && p.trim() !== '');
+                const currentId = pathParts.length > 0 ? pathParts[pathParts.length - 1].replace(/\.[^/.]+$/, "") : null;
+
+                if (currentId) {
+                    const strict = Array.from(allLinks).filter(l => l.hostname===location.hostname && l.href.includes(currentId) && (l.href.includes('play') || l.href.includes('vod-play') || l.href.includes('video')));
+                    if (strict.length > 1) return [...new Set(strict)];
+                }
+
+                const groups = new Map();
+                for (let link of allLinks) {
+                    const text = link.innerText.trim();
+                    if (/^(\d+(\.\d+)?|第\d+[集话]|OVA\d*|SP\d*|EP?\d+|Vol\.?\d+)$/i.test(text) || /^\d+-\d+$/.test(text)) {
+                        const gp = link.parentElement?.parentElement;
+                        if (gp) { if (!groups.has(gp)) groups.set(gp, []); groups.get(gp).push(link); }
+                    }
+                }
+                let best = []; for (let links of groups.values()) if (links.length > best.length) best = links;
+                return best.length > 1 ? best : null;
+            };
+
+            const links = findBestLinks();
+            if (!links || links.length === 0) { Core.showToast('⚠️ No episode list found.', 3000); return; }
+            const finalLinks = Array.from(new Map(links.map(l => [l.href, l])).values());
             const results = [];
-            let completed = 0;
             let successCount = 0;
 
+            Core.showToast(`📺 Found ${finalLinks.length} episodes.<br>🕷️ Starting Crawler...`);
             const container = document.createElement('div');
-            container.style.cssText = 'position:fixed;right:0px;bottom:0px;width:10px;height:10px;overflow:hidden;opacity:0.01;z-index:9999;';
+            container.style.cssText = 'position:fixed;right:0;bottom:0;width:10px;height:10px;opacity:0.01;z-index:9999;';
             document.body.appendChild(container);
 
+            let activeTask = null;
             const messageHandler = (e) => {
-                if (e.data && e.data.type === 'IINA_VIDEO_FOUND') {
-                    const task = activeTask;
-                    if (task && !task.done) {
-                        task.done = true;
-                        task.resolve(e.data.url);
-                    }
+                if (e.data?.type === 'IINA_VIDEO_FOUND' && activeTask && !activeTask.done) {
+                    activeTask.done = true;
+                    activeTask.resolve(e.data.url);
                 }
             };
             window.addEventListener('message', messageHandler);
 
-            let activeTask = null;
-            const runTask = (link, index) => {
-                return new Promise(resolve => {
-                    const title = link.getAttribute('title') || link.innerText.trim() || `Episode ${index + 1}`;
-                    const targetUrl = link.href;
-                    activeTask = { url: targetUrl, done: false, resolve: (vUrl) => {
-                        if (vUrl) {
-                            results.push({ title, url: vUrl, index });
-                            successCount++;
-                        }
-                        cleanup();
-                        resolve();
-                    }};
-                    const iframe = document.createElement('iframe');
-                    iframe.src = targetUrl;
-                    iframe.style.width = '400px';
-                    iframe.style.height = '300px';
-                    container.appendChild(iframe);
-                    const timer = setTimeout(() => {
-                        if (!activeTask.done) {
-                            activeTask.resolve(null);
-                        }
-                    }, 5000);
-                    const cleanup = () => {
-                        clearTimeout(timer);
-                        try { container.removeChild(iframe); } catch(e){}
-                    };
-                });
-            };
+            const runTask = (link, index) => new Promise(resolve => {
+                activeTask = { url: link.href, done: false, resolve: (vUrl) => {
+                    if (vUrl) { results.push({ title: link.title || link.innerText.trim() || `EP ${index+1}`, url: vUrl, index }); successCount++; }
+                    cleanup(); resolve();
+                }};
+                const iframe = document.createElement('iframe');
+                iframe.src = link.href; iframe.style.width = '400px'; iframe.style.height = '300px';
+                container.appendChild(iframe);
+
+                const timer = setTimeout(() => { if (!activeTask.done) activeTask.resolve(null); }, 5000);
+                const cleanup = () => {
+                    clearTimeout(timer);
+                    try { container.removeChild(iframe); } catch(e){}
+                };
+            });
 
             for (let i = 0; i < finalLinks.length; i++) {
-                completed++;
-                UtilsGiri.showToast(`📺 Parsing Progress: ${i + 1}/${finalLinks.length}<br>✅ Success: ${successCount}<br>⚡️ Now Parsing: ${finalLinks[i].innerText.trim()}`);
+                Core.showToast(`📺 Progress: ${i + 1}/${finalLinks.length}<br>✅ Success: ${successCount}<br>⚡️ Processing: ${finalLinks[i].innerText.trim()}`);
                 await runTask(finalLinks[i], i);
-                await new Promise(r => setTimeout(r, 50));
+                await new Promise(r => setTimeout(r, 100));
             }
 
             window.removeEventListener('message', messageHandler);
             document.body.removeChild(container);
 
-            if (results.length === 0) {
-                UtilsGiri.showToast('Parsing failed.', 4000);
-                return;
-            }
+            if (results.length === 0) { Core.showToast('❌ Parsing failed.', 3000); return; }
 
             results.sort((a, b) => a.index - b.index);
-            let m3uContent = "#EXTM3U\n";
-            results.forEach(item => {
-                let t = item.title.replace(/[\r\n,]+/g, ' ').trim();
-                m3uContent += `#EXTINF:-1,${t}\n${item.url}\n`;
-            });
+            let m3u = "#EXTM3U\n" + results.map(item => `#EXTINF:-1,${item.title.replace(/[\r\n,]+/g, ' ').trim()}\n${item.url}`).join('\n');
+            const safeTitle = document.title.split(/[-_]/)[0].trim() || "Playlist";
 
-            const safeTitle = document.title.split(/[-_]/)[0].trim().replace(/[\\/:*?"<>|]/g, "") || "Playlist";
-            UtilsGiri.showToast(`✅ Export ${results.length}/${finalLinks.length} episodes<br>`, 3000);
-
-            UtilsGiri.downloadM3U(m3uContent, safeTitle);
+            Core.showToast(`✅ Exported ${results.length} episodes.<br>Opening IINA...`, 3000);
+            Core.downloadM3U(m3u, safeTitle);
         }
     };
 
-    const StrategyDefault = {
+    // --- Adapter 2: Panopto (Turbo) ---
+    const AdapterPanopto = {
+        name: 'Panopto (Turbo)',
+        match: () => location.hostname.includes('panopto.com') || location.pathname.includes('Panopto'),
+        execute: async () => {
+            const urlParams = new URLSearchParams(window.location.search);
+            const deliveryId = urlParams.get('id');
+            if (!deliveryId) {
+                window.location.href = `iina://open?url=${encodeURIComponent(window.location.href)}`;
+                return;
+            }
+            Core.showToast('⚡️ Fetching stream info...', 3000);
+            try {
+                const response = await fetch('/Panopto/Pages/Viewer/DeliveryInfo.aspx', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: `deliveryId=${deliveryId}&responseType=json`
+                });
+                const data = await response.json();
+                let streamUrl = data?.Delivery?.Streams?.[0]?.StreamUrl;
+                if (streamUrl) {
+                    window.location.href = `iina://open?url=${encodeURIComponent(streamUrl)}`;
+                } else { throw new Error(); }
+            } catch (e) {
+                window.location.href = `iina://open?url=${encodeURIComponent(window.location.href)}`;
+            }
+        }
+    };
+
+    // --- Adapter 3: Default (Primitive) ---
+    const AdapterDefault = {
         name: 'Default (Primitive)',
         match: () => true,
-
-        runChild: () => {},
-
         execute: () => {
             const targetUrl = window.location.href;
             console.log('[IINA Primitive] Sending:', targetUrl);
-
+            Core.showToast('🚀 [Default] Opening in IINA...', 2000);
             window.location.href = `iina://open?url=${encodeURIComponent(targetUrl)}`;
         }
     };
 
-    const CurrentStrategy = StrategyGiri.match() ? StrategyGiri : StrategyDefault;
-    console.log(`[IINA] Loaded Strategy: ${CurrentStrategy.name}`);
+    // =========================================================================
+    // 🧠 MAIN: Initialization
+    // =========================================================================
 
-    if (window.self !== window.top && StrategyGiri.match()) {
-        CurrentStrategy.runChild();
+    const adapters = [AdapterGiri, AdapterPanopto, AdapterDefault];
+    let currentAdapter = null;
+
+    for (const adapter of adapters) {
+        if (adapter.match()) {
+            currentAdapter = adapter;
+            break;
+        }
+    }
+    console.log(`[IINA] Loaded Adapter: ${currentAdapter.name}`);
+
+    // Child Window Initialization
+    if (window.self !== window.top && currentAdapter.onReady) {
+        currentAdapter.onReady();
         return;
     }
 
-    let lastSniffedUrl = '';
-    const mainCheck = (u) => {
-        if (typeof u === 'string' && (u.includes('.m3u8') || u.includes('.mp4') || u.includes('video'))) {
-            lastSniffedUrl = u;
-        }
-    };
-
-    if (StrategyGiri.match()) {
-        const oriOpen = XMLHttpRequest.prototype.open;
-        XMLHttpRequest.prototype.open = function(m, u) { mainCheck(u); return oriOpen.apply(this, arguments); };
-        const oriFetch = window.fetch;
-        window.fetch = function(i, init) {
-            let u = i instanceof Request ? i.url : i;
-            mainCheck(u);
-            return oriFetch.apply(this, arguments);
-        };
-    }
-
     document.addEventListener('keydown', function(e) {
-        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
-
+        const tag = e.target.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target.isContentEditable) return;
         if (e.altKey && e.code === 'KeyI') {
             e.preventDefault();
-
-            if (StrategyGiri.match()) {
-                let singleUrl = UtilsGiri.formatUrl(lastSniffedUrl);
-                if (!singleUrl) singleUrl = UtilsGiri.extractVideoFuzzy(document.body.innerHTML);
-                const hasPlayer = window.player_data || window.config || document.querySelector('video');
-
-                if (singleUrl && hasPlayer && !location.pathname.endsWith('/')) {
-                    UtilsGiri.showToast('🚀 [Single] Opening in IINA...', 2000);
-                    window.location.href = `iina://open?url=${encodeURIComponent(singleUrl)}`;
-                } else {
-                    StrategyGiri.exportPlaylist();
-                }
-            } else {
-                StrategyDefault.execute();
-            }
+            console.log(`[IINA] Executing: ${currentAdapter.name}`);
+            currentAdapter.execute();
         }
     }, false);
 
