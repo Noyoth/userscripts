@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Open in IINA
 // @namespace    https://github.com/Noyoth/userscripts
-// @version      2.0.0
+// @version      2.0.1
 // @description  Opens web videos in IINA via (Option + I), featuring specialized support for https://bgm.girigirilove.com to export complete series as .m3u playlists.
 // @author       Noyoth
 // @match        *://*/*
@@ -117,7 +117,7 @@
                         const playBtn = document.querySelector('.dplayer-mobile-play, .art-state-play, button[aria-label="Play"], video');
                         if (playBtn) playBtn.click();
                     }
-                }, 300);
+                }, 100);
             });
             setInterval(() => {
                 if (!foundAndSent) {
@@ -224,7 +224,7 @@
                 completed++;
                 UtilsGiri.showToast(`📺 Parsing Progress: ${i + 1}/${finalLinks.length}<br>✅ Success: ${successCount}<br>⚡️ Now Parsing: ${finalLinks[i].innerText.trim()}`);
                 await runTask(finalLinks[i], i);
-                await new Promise(r => setTimeout(r, 100));
+                await new Promise(r => setTimeout(r, 50));
             }
 
             window.removeEventListener('message', messageHandler);
